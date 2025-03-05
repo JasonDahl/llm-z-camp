@@ -334,34 +334,34 @@ def extract_text_chunks(pdf_path, output_json="chapter_text.json", chunk_size=50
     current_section = None
     buffer = []
     buffer_token_count = 0
-
+    
     section_pattern = re.compile(r"^(\d+)\s*[-–]\s*(.+)")  # Detect "105 – Motion and Kinetic Energy"
     subsection_pattern = re.compile(r"^(\d+\.\d+)\s*[-–]\s*(.+)")  # Detect "105.1 – Coordinate Systems"
     page_header_pattern = re.compile(r"^\d{3}[-–]\d+\s*\|\s*P\s*h\s*y\s*i\s*c\s*s", re.IGNORECASE)
-    excessive_spacing_pattern = re.compile(r"^[A-Za-z]\s[A-Za-z]\s[A-Za-z]")  # Detect headers with spacing issues
-    equation_pattern = re.compile(r"\$(.*?)\$")  # Detect LaTeX-style equations
-
+    cid_pattern = re.compile(r"\( cid:\d+ \)")  # Detect ( cid:XXXX ) artifacts
+    
     with pdfplumber.open(pdf_path) as pdf:
+        first_page_text = pdf.pages[0].extract_text()
+        if first_page_text:
+            first_line = first_page_text.strip().split("\n")[0]
+            match = section_pattern.match(first_line)
+            if match:
+                unit_num, unit_title = match.groups()
+                current_unit = f"Unit {unit_num}"
+                current_section = unit_title
+        
         for page_num, page in enumerate(pdf.pages):
             text = page.extract_text()
             if not text:
                 continue
-
-            for line in text.split("\n"):
-                line = line.strip()
-
-                # Skip page headers
-                if page_header_pattern.match(line) or excessive_spacing_pattern.match(line):
-                    continue
-
-                # Detect and extract Unit/Chapter titles
-                unit_match = section_pattern.match(line)
-                if unit_match:
-                    current_unit, unit_title = unit_match.groups()
-                    current_unit = f"Unit {current_unit}"  # Normalize unit naming
-                    current_section = unit_title
-                    continue
-
+            
+            lines = text.split("\n")
+            if len(lines) > 1:
+                lines = lines[1:]  # Skip the first line to avoid page headers
+            
+            for line in lines:
+                line = cid_pattern.sub("", line).strip()  # Remove cid artifacts
+                
                 # Detect and extract Section titles
                 section_match = subsection_pattern.match(line)
                 if section_match:
@@ -376,16 +376,12 @@ def extract_text_chunks(pdf_path, output_json="chapter_text.json", chunk_size=50
                         buffer, buffer_token_count = [], 0  # Reset buffer for new section
                     current_section = section_match.group(2)
                     continue
-
-                # Replace equations with placeholders
-                line = equation_pattern.sub(lambda m: f"<<EQUATION_{page_num+1}>>", line)
-
+                
                 # Tokenize content and add to buffer
                 tokens = word_tokenize(line)
                 token_count = len(tokens)
 
                 if buffer_token_count + token_count > chunk_size:
-                    # Store current chunk
                     extracted_chunks.append({
                         "unit": current_unit,
                         "section": current_section,
@@ -393,14 +389,14 @@ def extract_text_chunks(pdf_path, output_json="chapter_text.json", chunk_size=50
                         "content": " ".join(buffer),
                         "page": page_num + 1,
                     })
-
+                    
                     # Start new buffer with overlap from previous chunk
                     buffer = buffer[-overlap:] + tokens
                     buffer_token_count = len(buffer)
                 else:
                     buffer.extend(tokens)
                     buffer_token_count += token_count
-
+            
             # Store remaining buffer at the end of the document
             if buffer:
                 extracted_chunks.append({
@@ -411,18 +407,8 @@ def extract_text_chunks(pdf_path, output_json="chapter_text.json", chunk_size=50
                     "page": page_num + 1,
                 })
     
-    # Deduplicate overlapping paragraphs
-    seen_chunks = set()
-    final_chunks = []
-    for chunk in extracted_chunks:
-        chunk_text = chunk["content"]
-        if chunk_text not in seen_chunks:
-            final_chunks.append(chunk)
-            seen_chunks.add(chunk_text)
-
-    # Save extracted content as JSON
     with open(output_json, "w", encoding="utf-8") as f:
-        json.dump(final_chunks, f, indent=4)
+        json.dump(extracted_chunks, f, indent=4)
 
     print(f"Text extraction complete! Data saved to {output_json}")
-    return final_chunks
+    return extracted_chunks
