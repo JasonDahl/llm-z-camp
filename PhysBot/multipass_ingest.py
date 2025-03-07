@@ -1,241 +1,298 @@
 import os
-import json
 import re
+import json
 import logging
-import requests
-import pdfplumber
-import fitz  # PyMuPDF for image extraction
+import shutil
+import fitz  # PyMuPDF
 import nltk
-from nltk.tokenize import word_tokenize
+import subprocess
 from tqdm import tqdm
+from nltk.tokenize import word_tokenize, sent_tokenize
+import pymupdf4llm
+import unicodedata
 
-from unstructured.partition.pdf import partition_pdf
-
-# Ensure NLTK tokenization resources are available
 nltk.download("punkt")
 
-# Logging setup
+# Ensure logging is properly set up
 logging.basicConfig(
-    filename="pdf_processing.log",
+    filename="multipass_ingest.log",
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 
-# Output folders
-FIGURE_DIR = "figures"
+# Ensure necessary directories exist
+OUTPUT_DIR = "data/json"
+FIGURE_DIR = "data/figures"
+MARKDOWN_DIR = "data/markdown"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(FIGURE_DIR, exist_ok=True)
+os.makedirs(MARKDOWN_DIR, exist_ok=True)
 
-# ================================
-# PASS 1: METADATA EXTRACTION
-# ================================
-import requests
-import re
+### PASS 1: CONVERT PDF TO MARKDOWN
+def convert_pdf_to_md(pdf_path, output_dir="data/markdown/", reuse_existing=False):
+    """
+    Converts a PDF to Markdown using PyMuPDF4LLM and saves it to a specified output directory.
 
-def extract_metadata(pdf_path):
+    Parameters:
+        pdf_path (str): Path to the input PDF file.
+        output_dir (str): Directory where the Markdown file should be saved.
+        reuse_existing (bool): If True, loads an existing Markdown file instead of re-processing.
+
+    Returns:
+        str: The extracted Markdown text.
     """
-    Extracts unit title, section headers, and page numbers using Unstructured.
-    Falls back on extracting unit title from the filename if necessary.
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Extract filename without extension
+    pdf_filename = os.path.basename(pdf_path)
+    md_filename = os.path.splitext(pdf_filename)[0] + ".md"
+    output_md_path = os.path.join(output_dir, md_filename)
+
+    # If the Markdown file exists and reuse_existing is True, load it
+    if reuse_existing and os.path.exists(output_md_path):
+        logging.info(f"Loading existing Markdown from {output_md_path}")
+        with open(output_md_path, "r", encoding="utf-8") as md_file:
+            return md_file.read()
+
+    # Otherwise, convert the PDF to Markdown
+    logging.info(f"Converting {pdf_path} to Markdown")
+    md_text = pymupdf4llm.to_markdown(pdf_path)
+
+    # Save Markdown to a file
+    with open(output_md_path, "w", encoding="utf-8") as md_file:
+        md_file.write(md_text)
+
+    logging.info(f"Saved Markdown to {output_md_path}")
+    return md_text
+
+### PASS 2: METADATA EXTRACTION
+def extract_metadata(md_text, pdf_path):
     """
-    elements = partition_pdf(filename=pdf_path, extract_images=False)
+    Extracts unit title and section headers from Markdown.
+    Falls back to PDF filename if necessary.
+    """
+    logging.info(f"Extracting metadata from {pdf_path}")
     
     unit_title = None
     section_headers = []
-
-    # Try to extract from document text
-    for element in elements:
-        text = element.text.strip()
+    
+    lines = md_text.split("\n")
+    
+    for line in lines:
+        line = line.strip()
         
-        match = re.match(r"^Unit\s*(\d+)\s*[-–]\s*(.+)", text)
+        # Detect unit title
+        match = re.match(r"^#\s*Unit\s*(\d+)\s*[-–]\s*(.+)", line)
         if match and not unit_title:
             unit_title = f"Unit {match.group(1)} - {match.group(2)}"
-
-        section_match = re.match(r"^(\d+\.\d+)\s*[-–]\s*(.+)", text)
+        
+        # Detect section headers
+        section_match = re.match(r"^##\s*(.+)", line)
         if section_match:
-            section_headers.append({"section": section_match.group(2), "page": element.metadata.page_number})
-
-    # **Fallback: Extract from filename if document parsing fails**
+            section_headers.append(section_match.group(1))
+    
+    # Fallback to PDF filename if needed
     if not unit_title:
         filename = os.path.basename(pdf_path)
-        filename_match = re.search(r"Unit\s*(\d+)\s*[-–]\s*(.+)\.pdf", filename, re.IGNORECASE)
-        if filename_match:
-            unit_title = f"Unit {filename_match.group(1)} - {filename_match.group(2)}"
-            print(f"⚠️ Warning: Extracted unit title from filename -> {unit_title}")
+        match = re.match(r"(Unit\s*\d+\s*-\s*.+)\.pdf", filename)
+        if match:
+            unit_title = match.group(1)
         else:
-            print("⚠️ Warning: Could not extract unit title from text or filename.")
-
+            unit_title = "Unknown Unit"
+            logging.warning("Could not extract unit title, falling back to 'Unknown Unit'")
+    
     metadata = {"unit": unit_title, "sections": section_headers}
     return metadata
 
-
-# ================================
-# PASS 2: TEXT CHUNKING
-# ================================
-def extract_text_chunks(pdf_path, chunk_size=500, overlap=75):
+### PASS 3: CHUNKING TEXT FOR LLM
+def chunk_text(md_text, chunk_size=500, overlap=75):
     """
-    Extracts and chunks text into LLM-friendly chunks (500-600 tokens).
-    Uses pdfplumber for reliable text extraction.
+    Tokenizes and chunks Markdown text into structured JSON.
     """
-    logging.info(f"Extracting text from {pdf_path}")
-    
-    extracted_chunks = []
+    tokens = nltk.word_tokenize(md_text)
+    chunks = []
     buffer = []
-    buffer_token_count = 0
-    current_section = None
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_num, page in enumerate(tqdm(pdf.pages, desc="Processing Text")):
-            text = page.extract_text()
-            if not text:
-                continue
+    for token in tokens:
+        buffer.append(token)
+        if len(buffer) >= chunk_size:
+            chunks.append(" ".join(buffer))
+            buffer = buffer[-overlap:]  # Maintain overlap
 
-            lines = text.split("\n")[1:]  # Skip first line (header)
-            for line in lines:
-                line = line.strip()
+    return [{"chunk_type": "text", "content": chunk} for chunk in chunks]
 
-                # Detect section headers
-                section_match = re.match(r"^(\d+\.\d+)\s*[-–]\s*(.+)", line)
-                if section_match:
-                    current_section = section_match.group(2)
-                    continue
-                
-                tokens = word_tokenize(line)
-                token_count = len(tokens)
+### PASS 4: EXTRACT EQUATIONS USING PANDOC
+import subprocess
+import json
+import logging
+import re
 
-                if buffer_token_count + token_count > chunk_size:
-                    extracted_chunks.append({
-                        "section": current_section,
-                        "chunk_type": "paragraph",
-                        "content": " ".join(buffer),
-                        "page": page_num + 1,
-                    })
-                    buffer = buffer[-overlap:] + tokens
-                    buffer_token_count = len(buffer)
-                else:
-                    buffer.extend(tokens)
-                    buffer_token_count += token_count
-
-            if buffer:
-                extracted_chunks.append({
-                    "section": current_section,
-                    "chunk_type": "paragraph",
-                    "content": " ".join(buffer),
-                    "page": page_num + 1,
-                })
-
-    return extracted_chunks
-
-
-# ================================
-# PASS 3: EQUATION EXTRACTION
-# ================================
-def extract_equations(pdf_path):
+def extract_equations_with_pandoc(md_text):
     """
-    Extracts LaTeX equations and replaces them with <<EQUATION_X>> placeholders.
+    Extracts LaTeX equations from Markdown using Pandoc's JSON AST format.
+    Ensures proper equation formatting and replaces them with placeholders.
     """
-    logging.info(f"Extracting equations from {pdf_path}")
-    
+    logging.info("Extracting equations using Pandoc")
     equations = []
-    equation_counter = 1
+    
+    try:
+        # Convert Markdown to JSON AST with Pandoc
+        result = subprocess.run(
+            ["pandoc", "--from=markdown", "--to=json"],
+            input=md_text,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        ast = json.loads(result.stdout)
+        
+        # Traverse AST to extract equations
+        def find_equations(obj):
+            if isinstance(obj, dict):
+                if obj.get("t") in ["Math", "RawInline"]:
+                    eq_text = obj["c"][-1]
+                    
+                    # Normalize Unicode to prevent garbled characters
+                    eq_text = unicodedata.normalize("NFKC", eq_text)
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_num, page in enumerate(tqdm(pdf.pages, desc="Processing Equations")):
-            text = page.extract_text()
-            if not text:
-                continue
+                    # Ensure valid LaTeX formatting (block vs inline)
+                    if obj["t"] == "Math":
+                        if obj["c"][0]["t"] == "DisplayMath":
+                            eq_text = f"$$ {eq_text} $$"
+                        else:
+                            eq_text = f"$ {eq_text} $"
 
-            matches = re.findall(r"(\$.*?\$)", text)
-            for eq in matches:
-                eq_placeholder = f"<<EQUATION_{equation_counter}>>"
-                equations.append({
-                    "equation_id": eq_placeholder,
-                    "content": eq,
-                    "page": page_num + 1,
-                })
-                text = text.replace(eq, eq_placeholder)
-                equation_counter += 1
+                    equations.append(eq_text)
 
-    return equations
+                for v in obj.values():
+                    find_equations(v)
+            elif isinstance(obj, list):
+                for v in obj:
+                    find_equations(v)
 
+        find_equations(ast)
+        
+        # Replace extracted equations in text with placeholders
+        for i, eq in enumerate(equations):
+            placeholder = f"<<EQUATION_{i+1}>>"
+            md_text = re.sub(re.escape(eq), placeholder, md_text, count=1)
 
-# ================================
-# PASS 4: FIGURE EXTRACTION
-# ================================
-def extract_figures(pdf_path):
+    except subprocess.CalledProcessError as e:
+        logging.error(f"Pandoc equation extraction failed: {e}")
+    
+    return md_text, [{"id": f"<<EQUATION_{i+1}>>", "content": eq} for i, eq in enumerate(equations)]
+
+### PASS 5: FIGURE EXTRACTION
+def extract_figures(pdf_path, image_output_folder):
     """
-    Extracts figures and captions, saving images separately.
+    Extracts figures from PDF pages and saves them as separate image files.
     """
     logging.info(f"Extracting figures from {pdf_path}")
-    
-    figures = []
     doc = fitz.open(pdf_path)
-
+    figures = []
+    
     for page_num in tqdm(range(len(doc)), desc="Processing Figures"):
         page = doc[page_num]
-
-        for img_index, img in enumerate(page.get_images(full=True)):
-            xref = img[0]
+        images = page.get_images(full=True)
+        
+        for img_index, img in enumerate(images):
+            xref = img[0]  # Image reference number
             img_data = doc.extract_image(xref)
-            img_ext = img_data["ext"]
             img_bytes = img_data["image"]
-
-            img_filename = f"{FIGURE_DIR}/figure_{page_num+1}_{img_index}.{img_ext}"
+            img_ext = img_data["ext"]
+            
+            img_filename = f"{image_output_folder}/figure_{page_num+1}_{img_index}.{img_ext}"
             with open(img_filename, "wb") as img_file:
                 img_file.write(img_bytes)
-
+            
             figures.append({
-                "figure_id": f"FIGURE_{page_num+1}_{img_index}",
-                "image_path": img_filename,
                 "page": page_num + 1,
+                "image_path": img_filename,
             })
 
     return figures
 
-
-# ================================
-# PASS 5: POST-PROCESSING & VALIDATION
-# ================================
-def validate_and_merge(metadata, text_chunks, equations, figures):
+def validate_extraction(output_data):
     """
-    Merges all extracted components, ensuring consistency and linking elements.
+    Validates the extracted data to ensure completeness and correctness.
+    Logs warnings if any issues are detected.
     """
-    logging.info("Validating and merging extracted data.")
+    logging.info("Validating extracted data...")
 
-    for chunk in text_chunks:
-        chunk["unit"] = metadata.get("unit", "Unknown Unit")
+    # Check for missing metadata
+    if not output_data.get("metadata") or not output_data["metadata"].get("unit"):
+        logging.warning("⚠️ Missing unit metadata!")
 
-    final_data = {
+    if not output_data.get("metadata") or not output_data["metadata"].get("sections"):
+        logging.warning("⚠️ No sections found in metadata!")
+
+    # Check for empty text chunks
+    if not output_data.get("text_chunks"):
+        logging.warning("⚠️ No text chunks extracted!")
+    else:
+        empty_chunks = [chunk for chunk in output_data["text_chunks"] if not chunk["content"].strip()]
+        if empty_chunks:
+            logging.warning(f"⚠️ Found {len(empty_chunks)} empty text chunks!")
+
+    # Check if equations were successfully extracted
+    if not output_data.get("equations"):
+        logging.warning("⚠️ No equations extracted!")
+
+    # Ensure figure references exist
+    if not output_data.get("figures"):
+        logging.warning("⚠️ No figures extracted!")
+    else:
+        missing_images = [fig for fig in output_data["figures"] if not os.path.exists(fig["image_path"])]
+        if missing_images:
+            logging.warning(f"⚠️ {len(missing_images)} extracted figures have missing image files!")
+
+    logging.info("Validation complete ✅")
+
+### MAIN PROCESSING FUNCTION
+def process_pdf(pdf_path, output_json):
+    """
+    Full multi-pass processing of a PDF file.
+    """
+    logging.info(f"Processing {pdf_path}")
+
+    # PASS 1: Convert to Markdown
+    md_text = convert_pdf_to_md(pdf_path, output_dir=MARKDOWN_DIR)
+
+    # PASS 2: Extract Metadata
+    metadata = extract_metadata(md_text, pdf_path)
+
+    # PASS 3: Chunk Text
+    text_chunks = chunk_text(md_text)
+
+    # PASS 4: Extract Equations with Pandoc
+    md_text, equations = extract_equations_with_pandoc(md_text)
+
+    # PASS 5: Extract Figures
+    figures = extract_figures(pdf_path, FIGURE_DIR)
+
+    
+    
+    # Combine all extracted elements
+    final_output = {
         "metadata": metadata,
         "text_chunks": text_chunks,
         "equations": equations,
         "figures": figures,
     }
 
-    return final_data
+    # ✅ **Validation step before saving**
+    validate_extraction(final_output)
 
-
-# ================================
-# MAIN PIPELINE
-# ================================
-def process_pdf(pdf_path, output_json="final_output.json"):
-    """
-    Executes the full multi-pass PDF extraction pipeline.
-    """
-    metadata = extract_metadata(pdf_path)
-    text_chunks = extract_text_chunks(pdf_path)
-    equations = extract_equations(pdf_path)
-    figures = extract_figures(pdf_path)
-
-    final_data = validate_and_merge(metadata, text_chunks, equations, figures)
-
+    # Save to JSON
     with open(output_json, "w", encoding="utf-8") as f:
-        json.dump(final_data, f, indent=4)
+        json.dump(final_output, f, indent=4)
 
-    print(f"Extraction complete! Data saved to {output_json}")
+    logging.info(f"Processing complete! Data saved to {output_json}")
+    print(f"Processing complete! Data saved to {output_json}")
 
-
-# ================================
-# RUN THE PIPELINE ON A TEST PDF
-# ================================
+### RUN SCRIPT
 if __name__ == "__main__":
     test_pdf = "data/chapters/Unit 105 - Motion and Kinetic Energy.pdf"
-    process_pdf(test_pdf, output_json="data/json/unit_105_output.json")
+    output_json = "data/json/unit_105_output.json"
+    process_pdf(test_pdf, output_json)
