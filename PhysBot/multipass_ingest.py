@@ -145,7 +145,7 @@ def extract_equations_with_openai(text_chunks, unit_number):
     - extracted_equations (list of dicts): Extracted equations and their metadata.
     """
     structured_equations = []
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI()
 
     for idx, chunk in enumerate(tqdm(text_chunks, desc=f"Extracting Equations for Unit {unit_number}", unit="chunk")):
         prompt = f"""
