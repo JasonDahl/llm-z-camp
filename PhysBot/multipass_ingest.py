@@ -12,6 +12,7 @@ import pymupdf4llm
 import unicodedata
 
 nltk.download("punkt")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Ensure logging is properly set up
 logging.basicConfig(
@@ -27,6 +28,10 @@ MARKDOWN_DIR = "data/markdown"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(FIGURE_DIR, exist_ok=True)
 os.makedirs(MARKDOWN_DIR, exist_ok=True)
+
+def extract_unit_number_from_filename(pdf_path):
+    match = re.search(r"Unit\s*(\d+)", os.path.basename(pdf_path))
+    return match.group(1) if match else "Unknown"
 
 ### PASS 1: CONVERT PDF TO MARKDOWN
 def convert_pdf_to_md(pdf_path, output_dir="data/markdown/", reuse_existing=False):
@@ -122,94 +127,95 @@ def chunk_text(md_text, chunk_size=500, overlap=75):
 
     return [{"chunk_type": "text", "content": chunk} for chunk in chunks]
 
-### PASS 4: EXTRACT EQUATIONS USING PANDOC
+### PASS 4: EXTRACT EQUATIONS USING OpenAI
 import subprocess
 import json
 import logging
 import re
 
-def extract_equations_with_pandoc(md_text):
+def extract_equations_with_openai(text_chunks, unit_number):
     """
-    Extracts LaTeX equations from Markdown using Pandoc's JSON AST format.
-    Ensures proper equation formatting and replaces them with placeholders.
+    Sends extracted raw text from PyMuPDF to OpenAI API for equation extraction.
+
+    Parameters:
+    - text_chunks (list of dicts): List of extracted text chunks, each with 'content' and 'page' keys.
+    - unit_number (str): Chapter or unit identifier (e.g., "105").
+
+    Returns:
+    - extracted_equations (list of dicts): Extracted equations and their metadata.
     """
-    logging.info("Extracting equations using Pandoc")
-    equations = []
-    
-    try:
-        # Convert Markdown to JSON AST with Pandoc
-        result = subprocess.run(
-            ["pandoc", "--from=markdown", "--to=json"],
-            input=md_text,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        ast = json.loads(result.stdout)
-        
-        # Traverse AST to extract equations
-        def find_equations(obj):
-            if isinstance(obj, dict):
-                if obj.get("t") in ["Math", "RawInline"]:
-                    eq_text = obj["c"][-1]
-                    
-                    # Normalize Unicode to prevent garbled characters
-                    eq_text = unicodedata.normalize("NFKC", eq_text)
+    structured_equations = []
+    client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
-                    # Ensure valid LaTeX formatting (block vs inline)
-                    if obj["t"] == "Math":
-                        if obj["c"][0]["t"] == "DisplayMath":
-                            eq_text = f"$$ {eq_text} $$"
-                        else:
-                            eq_text = f"$ {eq_text} $"
+    for idx, chunk in enumerate(tqdm(text_chunks, desc=f"Extracting Equations for Unit {unit_number}", unit="chunk")):
+        prompt = f"""
+        Identify and extract any mathematical equations from the following text.
+        Return:
+        - The equation in LaTeX format
+        - A placeholder identifier for reintegration (format: <<UNIT_{unit_number}_EQ_X>>)
+        - The page number from which it was extracted
 
-                    equations.append(eq_text)
+        Text: {chunk['content']}
 
-                for v in obj.values():
-                    find_equations(v)
-            elif isinstance(obj, list):
-                for v in obj:
-                    find_equations(v)
+        Format the output as a JSON array:
+        [{{"placeholder": "<<UNIT_{unit_number}_EQ_X>>", "equation": "", "page": X}}]
+        """
 
-        find_equations(ast)
-        
-        # Replace extracted equations in text with placeholders
-        for i, eq in enumerate(equations):
-            placeholder = f"<<EQUATION_{i+1}>>"
-            md_text = re.sub(re.escape(eq), placeholder, md_text, count=1)
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant that extracts and formats equations from scientific documents."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
 
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Pandoc equation extraction failed: {e}")
-    
-    return md_text, [{"id": f"<<EQUATION_{i+1}>>", "content": eq} for i, eq in enumerate(equations)]
+            response_text = response.choices[0].message.content.strip()
 
-### PASS 5: FIGURE EXTRACTION
-def extract_figures(pdf_path, image_output_folder):
+            # Clean response of markdown formatting
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+
+            # Validate and parse JSON
+            try:
+                try:
+                    extracted = json.loads(response_text)
+                except json.JSONDecodeError:
+                    logging.error(f"Invalid JSON from OpenAI: {response_text}")
+                    extracted = []
+
+                for eq in extracted:
+                    eq["page"] = chunk["page"]
+                    eq["placeholder"] = eq["placeholder"].replace("X", str(len(structured_equations) + 1))  # Ensure numbering
+                structured_equations.extend(extracted)
+
+            except json.JSONDecodeError:
+                logging.error(f"Invalid JSON response for page {chunk['page']}: {response_text}")
+
+        except Exception as e:
+            logging.error(f"OpenAI API error on page {chunk['page']}: {str(e)}")
+
+    return structured_equations
+
+### PASS 5: Extract figures
+def extract_figures(pdf_path, output_dir):
     """
-    Extracts figures from PDF pages and saves them as separate image files.
+    Extracts figures and captions, saving images separately.
     """
-    logging.info(f"Extracting figures from {pdf_path}")
+    os.makedirs(output_dir, exist_ok=True)
     doc = fitz.open(pdf_path)
     figures = []
-    
-    for page_num in tqdm(range(len(doc)), desc="Processing Figures"):
-        page = doc[page_num]
-        images = page.get_images(full=True)
-        
-        for img_index, img in enumerate(images):
-            xref = img[0]  # Image reference number
-            img_data = doc.extract_image(xref)
-            img_bytes = img_data["image"]
-            img_ext = img_data["ext"]
-            
-            img_filename = f"{image_output_folder}/figure_{page_num+1}_{img_index}.{img_ext}"
-            with open(img_filename, "wb") as img_file:
-                img_file.write(img_bytes)
-            
-            figures.append({
-                "page": page_num + 1,
-                "image_path": img_filename,
-            })
+
+    for page_num, page in enumerate(doc):
+        for img_index, img in enumerate(page.get_images(full=True)):
+            xref = img[0]
+            image = doc.extract_image(xref)
+            img_path = os.path.join(output_dir, f"figure_{page_num+1}_{img_index}.png")
+            with open(img_path, "wb") as f:
+                f.write(image["image"])
+            figures.append({"image_path": img_path, "page": page_num + 1})
 
     return figures
 
@@ -249,47 +255,49 @@ def validate_extraction(output_data):
 
     logging.info("Validation complete ✅")
 
+def reintegrate_equations(md_text, equations):
+    for eq in equations:
+        md_text = md_text.replace(eq["placeholder"], f"${eq['content']}$")
+    return md_text
+
 ### MAIN PROCESSING FUNCTION
 def process_pdf(pdf_path, output_json):
     """
-    Full multi-pass processing of a PDF file.
+    Full pipeline for processing a chapter PDF with multi-pass extraction.
     """
     logging.info(f"Processing {pdf_path}")
 
-    # PASS 1: Convert to Markdown
-    md_text = convert_pdf_to_md(pdf_path, output_dir=MARKDOWN_DIR)
+    # Step 1: Convert PDF to Markdown
+    md_text = convert_pdf_to_md(pdf_path)
 
-    # PASS 2: Extract Metadata
-    metadata = extract_metadata(md_text, pdf_path)
+    # Step 2: Extract metadata
+    metadata = extract_metadata_from_md(md_text)
 
-    # PASS 3: Chunk Text
+    # Step 3: Extract text chunks
     text_chunks = chunk_text(md_text)
 
-    # PASS 4: Extract Equations with Pandoc
-    md_text, equations = extract_equations_with_pandoc(md_text)
-
-    # PASS 5: Extract Figures
+    # Step 4: Extract figures
     figures = extract_figures(pdf_path, FIGURE_DIR)
 
-    
-    
-    # Combine all extracted elements
+    # Step 5: Extract equations via OpenAI API
+    equations = extract_equations_with_openai(md_text)
+
+    # 🔥🔥🔥 Step 6: Reintegration of equations 🔥🔥🔥
+    md_text = reintegrate_equations(md_text, equations)
+
+    # Step 7: Save JSON Output
     final_output = {
-        "metadata": metadata,
+        "unit": metadata.get("unit", "Unknown"),
+        "sections": metadata.get("sections", []),
         "text_chunks": text_chunks,
         "equations": equations,
         "figures": figures,
     }
 
-    # ✅ **Validation step before saving**
-    validate_extraction(final_output)
-
-    # Save to JSON
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(final_output, f, indent=4)
 
-    logging.info(f"Processing complete! Data saved to {output_json}")
-    print(f"Processing complete! Data saved to {output_json}")
+    logging.info(f"Processing complete. Data saved to {output_json}")
 
 ### RUN SCRIPT
 if __name__ == "__main__":
