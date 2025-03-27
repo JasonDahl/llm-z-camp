@@ -10,6 +10,7 @@ from tqdm import tqdm
 from nltk.tokenize import word_tokenize, sent_tokenize
 import pymupdf4llm
 import unicodedata
+import time
 
 nltk.download("punkt")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -32,6 +33,20 @@ os.makedirs(MARKDOWN_DIR, exist_ok=True)
 def extract_unit_number_from_filename(pdf_path):
     match = re.search(r"Unit\s*(\d+)", os.path.basename(pdf_path))
     return match.group(1) if match else "Unknown"
+
+def call_openai_with_retry(prompt, retries=3, delay=5):
+    for attempt in range(retries):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[{"role": "system", "content": "You are an AI assistant extracting LaTeX equations."},
+                          {"role": "user", "content": prompt}]
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logging.error(f"OpenAI API error: {e}. Retrying {attempt + 1}/{retries}...")
+            time.sleep(delay)
+    return None
 
 ### PASS 1: CONVERT PDF TO MARKDOWN
 def convert_pdf_to_md(pdf_path, output_dir="data/markdown/", reuse_existing=False):
@@ -162,15 +177,12 @@ def extract_equations_with_openai(text_chunks, unit_number):
         """
 
         try:
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": "You are an AI assistant that extracts and formats equations from scientific documents."},
-                    {"role": "user", "content": prompt}
-                ]
-            )
+            response_text = call_openai_with_retry(prompt)
+            if not response_text:
+                logging.error(f"Failed to extract equations for chunk {idx}.")
+                continue
 
-            response_text = response.choices[0].message.content.strip()
+            #response_text = response.choices[0].message.content.strip()
 
             # Clean response of markdown formatting
             if response_text.startswith("```json"):
@@ -257,7 +269,9 @@ def validate_extraction(output_data):
 
 def reintegrate_equations(md_text, equations):
     for eq in equations:
-        md_text = md_text.replace(eq["placeholder"], f"${eq['content']}$")
+        placeholder = eq["placeholder"]
+        formatted_eq = f"$$ {eq['content']} $$" if "\n" in eq["content"] else f"$ {eq['content']} $"
+        md_text = md_text.replace(placeholder, formatted_eq)
     return md_text
 
 ### MAIN PROCESSING FUNCTION
@@ -280,7 +294,7 @@ def process_pdf(pdf_path, output_json):
     figures = extract_figures(pdf_path, FIGURE_DIR)
 
     # Step 5: Extract equations via OpenAI API
-    equations = extract_equations_with_openai(md_text)
+    equations = extract_equations_with_openai(text_chunks, unit_number)
 
     # 🔥🔥🔥 Step 6: Reintegration of equations 🔥🔥🔥
     md_text = reintegrate_equations(md_text, equations)
