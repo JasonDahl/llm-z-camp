@@ -11,9 +11,21 @@ from nltk.tokenize import word_tokenize, sent_tokenize
 import pymupdf4llm
 import unicodedata
 import time
+from dotenv import load_dotenv
+from openai import OpenAI
 
 nltk.download("punkt")
+
+# Load environment variables
+load_dotenv(".env")  # Update with correct path
+
+# Retrieve OpenAI API key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not OPENAI_API_KEY:
+    raise ValueError("ERROR: OPENAI_API_KEY is not set in utils.py. Check your .env file.")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Ensure logging is properly set up
 logging.basicConfig(
@@ -140,14 +152,9 @@ def chunk_text(md_text, chunk_size=500, overlap=75):
             chunks.append(" ".join(buffer))
             buffer = buffer[-overlap:]  # Maintain overlap
 
-    return [{"chunk_type": "text", "content": chunk} for chunk in chunks]
+    return [{"chunk_type": "text", "content": chunk, "page": 0} for chunk in chunks]
 
 ### PASS 4: EXTRACT EQUATIONS USING OpenAI
-import subprocess
-import json
-import logging
-import re
-
 def extract_equations_with_openai(text_chunks, unit_number):
     """
     Sends extracted raw text from PyMuPDF to OpenAI API for equation extraction.
@@ -160,7 +167,6 @@ def extract_equations_with_openai(text_chunks, unit_number):
     - extracted_equations (list of dicts): Extracted equations and their metadata.
     """
     structured_equations = []
-    client = OpenAI()
 
     for idx, chunk in enumerate(tqdm(text_chunks, desc=f"Extracting Equations for Unit {unit_number}", unit="chunk")):
         prompt = f"""
@@ -182,32 +188,27 @@ def extract_equations_with_openai(text_chunks, unit_number):
                 logging.error(f"Failed to extract equations for chunk {idx}.")
                 continue
 
-            #response_text = response.choices[0].message.content.strip()
-
-            # Clean response of markdown formatting
+            # Remove Markdown fencing if present
             if response_text.startswith("```json"):
                 response_text = response_text[7:]
             if response_text.endswith("```"):
                 response_text = response_text[:-3]
 
-            # Validate and parse JSON
             try:
-                try:
-                    extracted = json.loads(response_text)
-                except json.JSONDecodeError:
-                    logging.error(f"Invalid JSON from OpenAI: {response_text}")
-                    extracted = []
-
-                for eq in extracted:
-                    eq["page"] = chunk["page"]
-                    eq["placeholder"] = eq["placeholder"].replace("X", str(len(structured_equations) + 1))  # Ensure numbering
-                structured_equations.extend(extracted)
-
+                extracted = json.loads(response_text)
             except json.JSONDecodeError:
-                logging.error(f"Invalid JSON response for page {chunk['page']}: {response_text}")
+                logging.error(f"Invalid JSON from OpenAI: {response_text}")
+                extracted = []
+
+            eq_counter = len(structured_equations) + 1
+            for eq in extracted:
+                eq["page"] = chunk["page"]
+                eq["placeholder"] = f"<<UNIT_{unit_number}_EQ_{eq_counter}>>"
+                eq_counter += 1
+                structured_equations.append(eq)
 
         except Exception as e:
-            logging.error(f"OpenAI API error on page {chunk['page']}: {str(e)}")
+            logging.error(f"OpenAI API error: {str(e)}")
 
     return structured_equations
 
@@ -236,20 +237,22 @@ def validate_extraction(output_data):
     Validates the extracted data to ensure completeness and correctness.
     Logs warnings if any issues are detected.
     """
-    logging.info("Validating extracted data...")
+    logging.info("🔍 Validating extracted data...")
 
-    # Check for missing metadata
-    if not output_data.get("metadata") or not output_data["metadata"].get("unit"):
+    # Check for missing unit title
+    if not output_data.get("unit"):
         logging.warning("⚠️ Missing unit metadata!")
 
-    if not output_data.get("metadata") or not output_data["metadata"].get("sections"):
+    # Check for missing section headers
+    if not output_data.get("sections"):
         logging.warning("⚠️ No sections found in metadata!")
 
-    # Check for empty text chunks
-    if not output_data.get("text_chunks"):
+    # Check for empty or missing text chunks
+    text_chunks = output_data.get("text_chunks", [])
+    if not text_chunks:
         logging.warning("⚠️ No text chunks extracted!")
     else:
-        empty_chunks = [chunk for chunk in output_data["text_chunks"] if not chunk["content"].strip()]
+        empty_chunks = [chunk for chunk in text_chunks if not chunk["content"].strip()]
         if empty_chunks:
             logging.warning(f"⚠️ Found {len(empty_chunks)} empty text chunks!")
 
@@ -257,20 +260,35 @@ def validate_extraction(output_data):
     if not output_data.get("equations"):
         logging.warning("⚠️ No equations extracted!")
 
-    # Ensure figure references exist
-    if not output_data.get("figures"):
+    # Ensure figure image paths are valid
+    figures = output_data.get("figures", [])
+    if not figures:
         logging.warning("⚠️ No figures extracted!")
     else:
-        missing_images = [fig for fig in output_data["figures"] if not os.path.exists(fig["image_path"])]
+        missing_images = [fig for fig in figures if not os.path.exists(fig.get("image_path", ""))]
         if missing_images:
             logging.warning(f"⚠️ {len(missing_images)} extracted figures have missing image files!")
 
-    logging.info("Validation complete ✅")
+    # ✅ Summary
+    logging.info(
+        f"✅ Extraction Summary: {len(text_chunks)} text chunks, "
+        f"{len(output_data.get('equations', []))} equations, "
+        f"{len(figures)} figures, "
+        f"{len(output_data.get('sections', []))} sections."
+    )
+
+    logging.info("✅ Validation complete.")
 
 def reintegrate_equations(md_text, equations):
+    """
+    Replace placeholders in Markdown with LaTeX-formatted equations.
+    """
     for eq in equations:
+        latex = eq.get("equation") or eq.get("content", "")
+        if not latex:
+            continue  # skip malformed entries
         placeholder = eq["placeholder"]
-        formatted_eq = f"$$ {eq['content']} $$" if "\n" in eq["content"] else f"$ {eq['content']} $"
+        formatted_eq = f"$$ {latex} $$" if "\n" in latex else f"$ {latex} $"
         md_text = md_text.replace(placeholder, formatted_eq)
     return md_text
 
@@ -285,7 +303,7 @@ def process_pdf(pdf_path, output_json):
     md_text = convert_pdf_to_md(pdf_path)
 
     # Step 2: Extract metadata
-    metadata = extract_metadata_from_md(md_text)
+    metadata = extract_metadata(md_text, pdf_path)
 
     # Step 3: Extract text chunks
     text_chunks = chunk_text(md_text)
@@ -294,6 +312,7 @@ def process_pdf(pdf_path, output_json):
     figures = extract_figures(pdf_path, FIGURE_DIR)
 
     # Step 5: Extract equations via OpenAI API
+    unit_number = extract_unit_number_from_filename(pdf_path)
     equations = extract_equations_with_openai(text_chunks, unit_number)
 
     # 🔥🔥🔥 Step 6: Reintegration of equations 🔥🔥🔥
@@ -307,6 +326,8 @@ def process_pdf(pdf_path, output_json):
         "equations": equations,
         "figures": figures,
     }
+
+    validate_extraction(final_output)
 
     with open(output_json, "w", encoding="utf-8") as f:
         json.dump(final_output, f, indent=4)
