@@ -13,26 +13,22 @@ import unicodedata
 import time
 from dotenv import load_dotenv
 from openai import OpenAI
+from physbot.utils import setup_logging
 
 nltk.download("punkt")
 
 # Load environment variables
-load_dotenv(".env")  # Update with correct path
+load_dotenv("../.env")  
 
-# Retrieve OpenAI API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-if not OPENAI_API_KEY:
-    raise ValueError("ERROR: OPENAI_API_KEY is not set in utils.py. Check your .env file.")
-
-client = OpenAI(api_key=OPENAI_API_KEY)
+from utils import get_openai_client
+client = get_openai_client()
 
 # Ensure logging is properly set up
-logging.basicConfig(
-    filename="multipass_ingest.log",
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+#logging.basicConfig(
+#    filename="multipass_ingest.log",
+#    level=logging.INFO,
+#    format="%(asctime)s - %(levelname)s - %(message)s",
+#)
 
 # Ensure necessary directories exist
 OUTPUT_DIR = "data/json"
@@ -336,6 +332,7 @@ def process_pdf(pdf_path, output_json):
 
 ### RUN SCRIPT
 if __name__ == "__main__":
+    setup_logging(log_name_prefix="multipass_ingest")
     test_pdf = "data/chapters/Unit 105 - Motion and Kinetic Energy.pdf"
     output_json = "data/json/unit_105_output.json"
     process_pdf(test_pdf, output_json)

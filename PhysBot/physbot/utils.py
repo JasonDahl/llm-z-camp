@@ -18,13 +18,38 @@ from nltk.tokenize import word_tokenize
 logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
-load_dotenv(".env")  # Update with correct path
+load_dotenv("../.env")  # Update with correct path
 
 # Retrieve OpenAI API key
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("Missing OpenAI API key.")
+    return OpenAI(api_key=api_key)
 
-if not OPENAI_API_KEY:
-    raise ValueError("ERROR: OPENAI_API_KEY is not set in utils.py. Check your .env file.")
+def setup_logging(log_dir="logs", log_name_prefix="physbot"):
+    """
+    Sets up logging for the entire pipeline.
+    Creates a timestamped log file under the specified log_dir.
+    """
+    if len(logging.root.handlers) > 0:
+        return  # Logging already configured
+    
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"{log_name_prefix}_{timestamp}.log")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()  # Also print to console
+        ]
+    )
+
+    logging.info("Logging initialized")
+    logging.info(f"Log file: {log_file}")
 
 def extract_first_page(pdf_folder, output_pdf):
     """
