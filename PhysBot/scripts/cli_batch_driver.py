@@ -1,8 +1,13 @@
-import argparse
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from physbot.batch_ingest import batch_process_chapters
 from physbot.utils import setup_logging
+from physbot.constants import ensure_directories
 
 def parse_args():
+    import argparse
     parser = argparse.ArgumentParser(description="CLI Driver for Batch Chapter Ingestion")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing JSON files.")
     parser.add_argument("--skip-existing", action="store_true", help="Skip chapters already processed.")
@@ -10,7 +15,8 @@ def parse_args():
     return parser.parse_args()
 
 def main():
-    setup_logging(log_name_prefix="physbot_batch")
+    ensure_directories()
+    setup_logging(log_dir="logs", log_name_prefix="physbot_batch")
     args = parse_args()
     batch_process_chapters(
         overwrite=args.overwrite,

@@ -5,13 +5,10 @@ from datetime import datetime
 from tqdm import tqdm
 from physbot.multipass_ingest import process_pdf
 from physbot.utils import setup_logging
+import re
 
 # === CONSTANTS ===
-CHAPTER_DIR = "data/chapters"
-OUTPUT_JSON_DIR = "data/json"
-MARKDOWN_DIR = "data/markdown"
-FIGURE_DIR = "data/figures"
-LOG_FILE = "batch_ingestion.log"
+from physbot.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
 
 # === LOGGING CONFIGURATION ===
 #logging.basicConfig(
@@ -33,20 +30,33 @@ def parse_args():
     parser.add_argument("--units", nargs="*", help="Specific unit numbers to process (e.g. 101 102 105).")
     return parser.parse_args()
 
+def extract_unit_number(filename):
+    """
+    Extracts the numeric unit ID from a filename like 'Unit 105 - Something.pdf'
+    Returns the string '105' (same format as passed in unit_filter).
+    """
+    match = re.match(r"Unit\s*(\d+)", filename)
+    return match.group(1) if match else None
+
 # === MAIN BATCH FUNCTION ===
 def batch_process_chapters(overwrite=False, skip_existing=False, unit_filter=None):
     chapter_pdfs = sorted([
         f for f in os.listdir(CHAPTER_DIR)
         if f.endswith(".pdf") and f.startswith("Unit")
+        and (not unit_filter or extract_unit_number(f) in unit_filter)
     ])
 
+    # Log the selected units and how many matched
+    logging.info(f"Units selected: {unit_filter if unit_filter else 'All'}")
+    logging.info(f"Found {len(chapter_pdfs)} matching PDFs")
+    
     total = 0
     success = 0
     skipped = 0
     failed = 0
 
     logging.info(f"🔍 Found {len(chapter_pdfs)} chapter PDFs.")
-    for dir_path in [OUTPUT_JSON_DIR, MARKDOWN_DIR, FIGURE_DIR]:
+    for dir_path in [JSON_DIR, MARKDOWN_DIR, FIGURE_DIR]:
         os.makedirs(dir_path, exist_ok=True)
 
     for filename in tqdm(chapter_pdfs, desc="📘 Processing Chapters"):
@@ -57,7 +67,7 @@ def batch_process_chapters(overwrite=False, skip_existing=False, unit_filter=Non
 
             total += 1
             pdf_path = os.path.join(CHAPTER_DIR, filename)
-            output_json_path = os.path.join(OUTPUT_JSON_DIR, f"unit_{unit_number}_output.json")
+            output_json_path = os.path.join(JSON_DIR, f"unit_{unit_number}_output.json")
 
             # Skip or overwrite
             if os.path.exists(output_json_path):

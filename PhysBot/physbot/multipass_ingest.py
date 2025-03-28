@@ -2,25 +2,26 @@ import os
 import re
 import json
 import logging
-import shutil
+from pathlib import Path
+from tqdm import tqdm
+from dotenv import load_dotenv
+
+import pymupdf4llm
 import fitz  # PyMuPDF
 import nltk
-import subprocess
-from tqdm import tqdm
-from nltk.tokenize import word_tokenize, sent_tokenize
-import pymupdf4llm
-import unicodedata
-import time
-from dotenv import load_dotenv
-from openai import OpenAI
-from physbot.utils import setup_logging
+from nltk.tokenize import word_tokenize
+
+from physbot.utils import (
+    setup_logging,
+    get_openai_client
+)
 
 nltk.download("punkt")
 
 # Load environment variables
 load_dotenv("../.env")  
 
-from utils import get_openai_client
+from physbot.utils import get_openai_client
 client = get_openai_client()
 
 # Ensure logging is properly set up
@@ -30,13 +31,7 @@ client = get_openai_client()
 #    format="%(asctime)s - %(levelname)s - %(message)s",
 #)
 
-# Ensure necessary directories exist
-OUTPUT_DIR = "data/json"
-FIGURE_DIR = "data/figures"
-MARKDOWN_DIR = "data/markdown"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(FIGURE_DIR, exist_ok=True)
-os.makedirs(MARKDOWN_DIR, exist_ok=True)
+from physbot.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
 
 def extract_unit_number_from_filename(pdf_path):
     match = re.search(r"Unit\s*(\d+)", os.path.basename(pdf_path))
@@ -154,57 +149,63 @@ def chunk_text(md_text, chunk_size=500, overlap=75):
 def extract_equations_with_openai(text_chunks, unit_number):
     """
     Sends extracted raw text from PyMuPDF to OpenAI API for equation extraction.
-
-    Parameters:
-    - text_chunks (list of dicts): List of extracted text chunks, each with 'content' and 'page' keys.
-    - unit_number (str): Chapter or unit identifier (e.g., "105").
-
-    Returns:
-    - extracted_equations (list of dicts): Extracted equations and their metadata.
+    Retries up to 3 times if invalid JSON is returned.
     """
     structured_equations = []
+    max_retries = 3
 
     for idx, chunk in enumerate(tqdm(text_chunks, desc=f"Extracting Equations for Unit {unit_number}", unit="chunk")):
-        prompt = f"""
-        Identify and extract any mathematical equations from the following text.
-        Return:
-        - The equation in LaTeX format
-        - A placeholder identifier for reintegration (format: <<UNIT_{unit_number}_EQ_X>>)
-        - The page number from which it was extracted
-
-        Text: {chunk['content']}
-
-        Format the output as a JSON array:
-        [{{"placeholder": "<<UNIT_{unit_number}_EQ_X>>", "equation": "", "page": X}}]
-        """
-
-        try:
-            response_text = call_openai_with_retry(prompt)
-            if not response_text:
-                logging.error(f"Failed to extract equations for chunk {idx}.")
-                continue
-
-            # Remove Markdown fencing if present
-            if response_text.startswith("```json"):
-                response_text = response_text[7:]
-            if response_text.endswith("```"):
-                response_text = response_text[:-3]
-
+        for attempt in range(1, max_retries + 1):
             try:
-                extracted = json.loads(response_text)
-            except json.JSONDecodeError:
-                logging.error(f"Invalid JSON from OpenAI: {response_text}")
-                extracted = []
+                prompt = f"""
+                Identify and extract any mathematical equations from the following text.
+                Return:
+                - The equation in LaTeX format
+                - A placeholder identifier for reintegration (format: <<UNIT_{unit_number}_EQ_X>>)
+                - The page number from which it was extracted
 
-            eq_counter = len(structured_equations) + 1
-            for eq in extracted:
-                eq["page"] = chunk["page"]
-                eq["placeholder"] = f"<<UNIT_{unit_number}_EQ_{eq_counter}>>"
-                eq_counter += 1
-                structured_equations.append(eq)
+                Text: {chunk.get('content', '')}
 
-        except Exception as e:
-            logging.error(f"OpenAI API error: {str(e)}")
+                Format the output as a JSON array:
+                [{{"placeholder": "<<UNIT_{unit_number}_EQ_X>>", "equation": "", "page": X}}]
+                """
+
+                response = call_openai_with_retry(prompt)
+                if not response:
+                    logging.error(f"[Retry {attempt}/{max_retries}] No response for chunk {idx}")
+                    continue
+
+                response_text = response.strip()
+
+                if response_text.startswith("```json"):
+                    response_text = response_text[7:]
+                if response_text.endswith("```"):
+                    response_text = response_text[:-3]
+
+                try:
+                    extracted = json.loads(response_text)
+                except json.JSONDecodeError:
+                    logging.warning(f"[Retry {attempt}/{max_retries}] Invalid JSON from OpenAI for chunk {idx}: {response_text}")
+                    if attempt == max_retries:
+                        logging.error(f"❌ Giving up after {max_retries} failed attempts for chunk {idx}")
+                    continue  # Retry
+                except Exception as parse_err:
+                    logging.error(f"Unexpected parse error for chunk {idx}: {str(parse_err)}")
+                    break  # Abort this chunk
+
+                # Assign consistent placeholders and store
+                eq_counter = len(structured_equations) + 1
+                for eq in extracted:
+                    eq["page"] = chunk.get("page", None)
+                    eq["placeholder"] = f"<<UNIT_{unit_number}_EQ_{eq_counter}>>"
+                    eq_counter += 1
+                    structured_equations.append(eq)
+
+                break  # ✅ Success – break retry loop
+
+            except Exception as e:
+                logging.error(f"OpenAI API error on chunk {idx} (page {chunk.get('page', '?')}): {str(e)}")
+                break  # Do not retry on API-level exception
 
     return structured_equations
 
@@ -289,7 +290,7 @@ def reintegrate_equations(md_text, equations):
     return md_text
 
 ### MAIN PROCESSING FUNCTION
-def process_pdf(pdf_path, output_json):
+def process_pdf(pdf_path, output_json, output_markdown_dir=None, output_figure_dir=None):
     """
     Full pipeline for processing a chapter PDF with multi-pass extraction.
     """
@@ -298,6 +299,11 @@ def process_pdf(pdf_path, output_json):
     # Step 1: Convert PDF to Markdown
     md_text = convert_pdf_to_md(pdf_path)
 
+    if output_markdown_dir:
+        markdown_path = Path(output_markdown_dir) / f"{Path(pdf_path).stem}.md"
+        with open(markdown_path, "w", encoding="utf-8") as f:
+            f.write(md_text)
+
     # Step 2: Extract metadata
     metadata = extract_metadata(md_text, pdf_path)
 
@@ -305,7 +311,9 @@ def process_pdf(pdf_path, output_json):
     text_chunks = chunk_text(md_text)
 
     # Step 4: Extract figures
-    figures = extract_figures(pdf_path, FIGURE_DIR)
+    unit_number = extract_unit_number_from_filename(pdf_path)
+    unit_figure_dir = os.path.join(FIGURE_DIR, f"unit_{unit_number}")
+    figures = extract_figures(pdf_path, unit_figure_dir)
 
     # Step 5: Extract equations via OpenAI API
     unit_number = extract_unit_number_from_filename(pdf_path)
@@ -333,6 +341,23 @@ def process_pdf(pdf_path, output_json):
 ### RUN SCRIPT
 if __name__ == "__main__":
     setup_logging(log_name_prefix="multipass_ingest")
-    test_pdf = "data/chapters/Unit 105 - Motion and Kinetic Energy.pdf"
-    output_json = "data/json/unit_105_output.json"
-    process_pdf(test_pdf, output_json)
+
+    # Set the PDF you want to process
+    test_pdf = "data/chapters/units/Unit APP1 - Appendix A - Derivatives.pdf"
+    pdf_name = Path(test_pdf).stem  # e.g., "Unit APP1 - Appendix A - Derivatives"
+
+    # Prepare output paths
+    output_json = JSON_DIR / f"{pdf_name.replace(' ', '_').lower()}.json"
+    output_md_dir = MARKDOWN_DIR
+    output_fig_dir = FIGURE_DIR / pdf_name.replace(' ', '_').lower()
+
+    # Ensure figure subdir exists
+    output_fig_dir.mkdir(parents=True, exist_ok=True)
+
+    # Run processing pipeline
+    process_pdf(
+        pdf_path=test_pdf,
+        output_json=str(output_json),
+        output_markdown_dir=str(output_md_dir),
+        output_figure_dir=str(output_fig_dir)
+    )

@@ -7,18 +7,24 @@ import json
 from dotenv import load_dotenv
 from tqdm import tqdm
 import logging
-
+from pathlib import Path
 import pdfplumber
 import nltk
+from datetime import datetime
 
 nltk.download("punkt")
 nltk.download('punkt_tab')
 from nltk.tokenize import word_tokenize
 
-logging.basicConfig(level=logging.INFO)
+from physbot.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
+
+#logging.basicConfig(level=logging.INFO)
 
 # Load environment variables
-load_dotenv("../.env")  # Update with correct path
+# Load .env from the project root, regardless of working directory
+project_root = Path(__file__).resolve().parents[1]  # Adjust as needed
+dotenv_path = project_root / ".env"
+load_dotenv(dotenv_path)
 
 # Retrieve OpenAI API key
 def get_openai_client():
@@ -27,29 +33,36 @@ def get_openai_client():
         raise ValueError("Missing OpenAI API key.")
     return OpenAI(api_key=api_key)
 
-def setup_logging(log_dir="logs", log_name_prefix="physbot"):
+def setup_logging(log_dir=None, log_name_prefix="physbot"):
     """
     Sets up logging for the entire pipeline.
     Creates a timestamped log file under the specified log_dir.
     """
-    if len(logging.root.handlers) > 0:
-        return  # Logging already configured
-    
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
+    project_root = Path(__file__).resolve().parents[1]
+    if log_dir is None:
+        log_dir = project_root / "logs"
+    else:
+        log_dir = Path(log_dir) if not isinstance(log_dir, Path) else log_dir
+
     os.makedirs(log_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"{log_name_prefix}_{timestamp}.log")
+    log_file = log_dir / f"{log_name_prefix}_{timestamp}.log"
 
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file),
-            logging.StreamHandler()  # Also print to console
+            logging.StreamHandler()
         ]
     )
 
     logging.info("Logging initialized")
     logging.info(f"Log file: {log_file}")
+    print(f"📄 Logging to: {log_file}")
 
 def extract_first_page(pdf_folder, output_pdf):
     """
