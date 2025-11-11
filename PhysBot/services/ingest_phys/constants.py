@@ -1,15 +1,31 @@
 from pathlib import Path
+from physbot_core.path_utils import get_project_root  # already in your project
 
-# Define project root relative to this file
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = get_project_root()  # resolves to .../llm-z-camp/PhysBot
 
-# Define all standard directories
-CHAPTER_DIR = PROJECT_ROOT / "data" / "chapters" / "units"
-JSON_DIR = PROJECT_ROOT / "data" / "json"
-MARKDOWN_DIR = PROJECT_ROOT / "data" / "markdown"
-FIGURE_DIR = PROJECT_ROOT / "data" / "figures"
-LOG_DIR = PROJECT_ROOT / "logs"
+# Dataset roots
+DATASETS_ROOT = PROJECT_ROOT / "datasets" / "physbot"
+RAW_DIR       = DATASETS_ROOT / "raw"
+INTERIM_DIR   = DATASETS_ROOT / "interim"
+PROCESSED_DIR = DATASETS_ROOT / "processed"
+META_DIR      = DATASETS_ROOT / "metadata"
+
+# Pipeline IO
+# raw inputs
+CHAPTER_DIR   = RAW_DIR / "chapters"
+
+# intermediate artifacts
+MARKDOWN_DIR  = INTERIM_DIR / "markdown"
+FIGURE_DIR    = INTERIM_DIR / "figures"
+
+# processed outputs
+JSON_DIR      = PROCESSED_DIR / "json"
+INDEX_DIR     = PROCESSED_DIR / "index"
+
+# logs
+LOG_DIR       = META_DIR / "logs"
 
 def ensure_directories():
-    for path in [CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR]:
-        path.mkdir(parents=True, exist_ok=True)
+    for p in [RAW_DIR, INTERIM_DIR, PROCESSED_DIR, META_DIR,
+              CHAPTER_DIR, MARKDOWN_DIR, FIGURE_DIR, JSON_DIR, INDEX_DIR, LOG_DIR]:
+        p.mkdir(parents=True, exist_ok=True)

@@ -10,17 +10,8 @@ import re
 # === CONSTANTS ===
 from services.ingest_phys.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
 
-# === LOGGING CONFIGURATION ===
-#logging.basicConfig(
-#    filename=LOG_FILE,
-#    level=logging.INFO,
-#    format="%(asctime)s - %(levelname)s - %(message)s"
-#)
-
-console = logging.StreamHandler()
-console.setLevel(logging.INFO)
-console.setFormatter(logging.Formatter('%(message)s'))
-logging.getLogger().addHandler(console)
+# Initialize unified logging (writes to datasets/physbot/metadata/logs)
+setup_logging(log_name_prefix="physbot_batch")
 
 # === CLI ARGUMENTS ===
 def parse_args():

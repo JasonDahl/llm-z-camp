@@ -166,3 +166,17 @@ figures/
 logs/
 es_backup/
 *.pyc
+
+# PhysBot data
+PhysBot/datasets/physbot/raw/
+PhysBot/datasets/physbot/interim/
+PhysBot/datasets/physbot/processed/json/
+PhysBot/datasets/physbot/processed/markdown/
+PhysBot/datasets/physbot/metadata/logs/
+PhysBot/es_backup/
+PhysBot/apps/physbot_app/logs/
+
+# Jupyter/py cache
+**/.ipynb_checkpoints/
+**/__pycache__/
+

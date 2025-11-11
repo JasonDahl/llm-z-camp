@@ -4,46 +4,29 @@ from PyPDF2 import PdfMerger
 import re
 from openai import OpenAI
 import json
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 from tqdm import tqdm
 import logging
 from pathlib import Path
 import pdfplumber
 import nltk
 from datetime import datetime
+from services.ingest_phys.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR as DATASET_LOG_DIR
 
-nltk.download("punkt")
-nltk.download('punkt_tab')
-from nltk.tokenize import word_tokenize
-
-from services.ingest_phys.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
-
-#logging.basicConfig(level=logging.INFO)
-
-# Load environment variables
-# Load .env from the project root, regardless of working directory
-project_root = Path(__file__).resolve().parents[1]  # Adjust as needed
-dotenv_path = project_root / ".env"
-load_dotenv(dotenv_path)
-
-# Retrieve OpenAI API key
-def get_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise ValueError("Missing OpenAI API key.")
-    return OpenAI(api_key=api_key)
+load_dotenv(find_dotenv())
 
 def setup_logging(log_dir=None, log_name_prefix="physbot"):
     """
     Sets up logging for the entire pipeline.
     Creates a timestamped log file under the specified log_dir.
     """
+    # Clear any existing handlers to avoid duplicate logs
     for handler in logging.root.handlers[:]:
         logging.root.removeHandler(handler)
 
-    project_root = Path(__file__).resolve().parents[1]
+    # Use datasets/physbot/metadata/logs by default
     if log_dir is None:
-        log_dir = project_root / "logs"
+        log_dir = DATASET_LOG_DIR   # <— NEW (replaces project_root/"logs")
     else:
         log_dir = Path(log_dir) if not isinstance(log_dir, Path) else log_dir
 
@@ -63,6 +46,27 @@ def setup_logging(log_dir=None, log_name_prefix="physbot"):
     logging.info("Logging initialized")
     logging.info(f"Log file: {log_file}")
     print(f"📄 Logging to: {log_file}")
+
+
+
+nltk.download("punkt")
+nltk.download('punkt_tab')
+from nltk.tokenize import word_tokenize
+
+# Load environment variables
+# Load .env from the project root, regardless of working directory
+project_root = Path(__file__).resolve().parents[1]  # Adjust as needed
+dotenv_path = project_root / ".env"
+load_dotenv(dotenv_path)
+
+# Retrieve OpenAI API key
+def get_openai_client():
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("Missing OpenAI API key.")
+    return OpenAI(api_key=api_key)
+
+
 
 def extract_first_page(pdf_folder, output_pdf):
     """

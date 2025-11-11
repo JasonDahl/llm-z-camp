@@ -5,33 +5,20 @@ import logging
 from pathlib import Path
 from tqdm import tqdm
 from dotenv import load_dotenv
-
 import pymupdf4llm
 import fitz  # PyMuPDF
 import nltk
 from nltk.tokenize import word_tokenize
+from services.ingest_phys.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
+from services.ingest_phys.utils import setup_logging
 
-from services.ingest_phys.utils import (
-    setup_logging,
-    get_openai_client
-)
+# Initialize unified logging (writes to datasets/physbot/metadata/logs)
+setup_logging(log_name_prefix="physbot_batch")
 
 nltk.download("punkt")
 
 # Load environment variables
 load_dotenv("../.env")  
-
-from services.ingest_phys.utils import get_openai_client
-client = get_openai_client()
-
-# Ensure logging is properly set up
-#logging.basicConfig(
-#    filename="multipass_ingest.log",
-#    level=logging.INFO,
-#    format="%(asctime)s - %(levelname)s - %(message)s",
-#)
-
-from services.ingest_phys.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
 
 def extract_unit_number_from_filename(pdf_path):
     match = re.search(r"Unit\s*(\d+)", os.path.basename(pdf_path))
@@ -295,6 +282,10 @@ def process_pdf(pdf_path, output_json, output_markdown_dir=None, output_figure_d
     Full pipeline for processing a chapter PDF with multi-pass extraction.
     """
     logging.info(f"Processing {pdf_path}")
+
+    if client is None:
+        from services.ingest_phys.utils import get_openai_client
+        client = get_openai_client()
 
     # Step 1: Convert PDF to Markdown
     md_text = convert_pdf_to_md(pdf_path)
