@@ -1,129 +1,139 @@
-from elasticsearch import Elasticsearch
-from openai import OpenAI
-from dotenv import load_dotenv
-from pathlib import Path
 import os
-import sys
 import re
+import pickle
+from pathlib import Path
+from typing import List, Dict, Tuple
+
+import numpy as np
 import streamlit as st
+from openai import OpenAI
 
-# Add parent of 'physbot' to the path
-sys.path.append(os.path.abspath(".."))
+# Optional ES: only used when deploy_mode == "elastic"
+try:
+    from elasticsearch import Elasticsearch  # type: ignore
+    HAS_ES = True
+except Exception:
+    HAS_ES = False
 
-from .path_utils import get_project_root
+import faiss  # faiss-cpu
+from .settings import AppSettings
 
-# Load environment variables from the project root
-# For Jupyter: assume this notebook is in /PhysBot/notebooks
-notebook_dir = Path.cwd()
-project_root = get_project_root()
-load_dotenv(dotenv_path=project_root / ".env")
+# ---- Cached resources --------------------------------------------------------
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+@st.cache_resource
+def _get_openai(api_key: str) -> OpenAI:
+    return OpenAI(api_key=api_key)
 
-# Initialize clients
-es = Elasticsearch("http://localhost:9200")
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
+@st.cache_resource(show_spinner=False)
+def _load_faiss(idx_path: str, meta_path: str) -> Tuple[faiss.Index, List[Dict]]:
+    idx = faiss.read_index(str(idx_path))
+    with open(meta_path, "rb") as f:
+        meta = pickle.load(f)
+    return idx, meta
 
-# Settings
-ES_INDEX = "physbot_units"
-EMBEDDING_MODEL = "text-embedding-ada-002"
-TOP_K = 5
+# ---- Embedding & search ------------------------------------------------------
 
-def get_query_embedding(query: str):
-    """Embed the user query using OpenAI."""
-    response = openai_client.embeddings.create(
-        model=EMBEDDING_MODEL,
-        input=query
+EMBEDDING_MODEL = "text-embedding-3-small"  # 1536d
+
+def _embed(client: OpenAI, text: str) -> List[float]:
+    resp = client.embeddings.create(model=EMBEDDING_MODEL, input=text)
+    return resp.data[0].embedding
+
+def _faiss_search(embedding: List[float],
+                  idx: faiss.Index,
+                  meta: List[Dict],
+                  k: int = 5) -> List[Dict]:
+    v = np.array(embedding, dtype="float32")[None, :]
+    faiss.normalize_L2(v)
+    D, I = idx.search(v, k)
+    return [meta[i] for i in I[0] if i >= 0]
+
+def _es_search(embedding: List[float], cfg: AppSettings, k: int = 5) -> List[Dict]:
+    if not HAS_ES:
+        raise RuntimeError("Elasticsearch client not available in this environment.")
+    es = Elasticsearch(
+        hosts=[cfg.elastic_host] if cfg.elastic_host else None,
+        basic_auth=(cfg.elastic_user, cfg.elastic_pass) if cfg.elastic_user and cfg.elastic_pass else None,
     )
-    return response.data[0].embedding
-
-def semantic_search(query_embedding, top_k=TOP_K):
-    """Use Elasticsearch to retrieve top-k similar chunks."""
-    search_query = {
-        "size": top_k,
-        "query": {
-            "script_score": {
-                "query": {"match_all": {}},
-                "script": {
-                    "source": "cosineSimilarity(params.query_vector, 'embedding') + 1.0",
-                    "params": {"query_vector": query_embedding}
-                }
-            }
-        }
+    query = {
+        "knn": {
+            "field": "embedding",
+            "query_vector": embedding,
+            "k": k,
+            "num_candidates": 256
+        },
+        "_source": ["text", "doc", "page", "unit", "section", "title"]
     }
-    response = es.search(index=ES_INDEX, query=search_query["query"])
-    return [hit["_source"] for hit in response["hits"]["hits"]]
+    res = es.search(index=cfg.elastic_index, knn=query["knn"], _source=query["_source"])
+    return [h["_source"] for h in res["hits"]["hits"]]
 
-def assemble_prompt(chunks, question):
-    """Construct an improved prompt using context and metadata, guiding LaTeX formatting."""
-    
-    context_blocks = []
-    for i, chunk in enumerate(chunks):
-        unit = chunk.get("unit", "Unknown")
-        section = chunk.get("section", "Unknown")
-        content = chunk.get("content", "").strip()
-        source_tag = f"[Source {i+1}: Unit {unit}, Section {section}]"
-        context_blocks.append(f"{source_tag}\n{content}")
-    
-    context_text = "\n\n".join(context_blocks)
+# ---- Prompting & formatting --------------------------------------------------
 
-    prompt = f"""You are a helpful physics tutor assistant.
+def _assemble_prompt(chunks: List[Dict], question: str) -> str:
+    """Context with bracketed citations [1], [2] … and plain text answer request."""
+    ctx_lines = []
+    for i, c in enumerate(chunks, start=1):
+        label = c.get("doc") or c.get("title") or f"Unit {c.get('unit','?')}"
+        page  = c.get("page", "?")
+        text  = (c.get("text") or c.get("content") or "").strip()
+        ctx_lines.append(f"[{i}] {label} • p.{page}\n{text}")
+    ctx = "\n\n".join(ctx_lines)
 
-    Use the context passages below to answer the student's question. 
-    - Cite sources like [Source 1], [Source 2], etc.
-    - Format any and all equations using block LaTeX like $$F = ma$$.
-    - Do not use Markdown or backticks for equations.
-    - Return the response as clean, plain text.
-
-    Context:
-    {context_text}
-
-    Question: {question}
-
-    Answer:"""
-
-    return prompt
-
-
-def append_citation_details(answer_text, chunks):
-    """
-    Replace [Source X] references in the answer with actual source info,
-    and append a readable reference block at the end.
-    """
-    source_map = {}
-    for i, chunk in enumerate(chunks):
-        source_map[f"Source {i+1}"] = f"Unit {chunk.get('unit', 'Unknown')} – {chunk.get('section', 'Unknown')}"
-
-    # Append a references section
-    used_sources = sorted(set(re.findall(r"\[Source \d+\]", answer_text)))
-    references = "\n\n**References:**\n"
-    for src in used_sources:
-        ref = source_map.get(src.replace("[", "").replace("]", ""), "Unknown source")
-        references += f"{src}: {ref}\n"
-
-    return answer_text + references
-
-def generate_rag_response(query: str):
-    """Perform semantic search and return a response from OpenAI."""
-    embedding = get_query_embedding(query)
-    top_chunks = semantic_search(embedding)
-    prompt = assemble_prompt(top_chunks, query)
-    
-    completion = openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
+    return (
+        "You are PhysBot, a careful physics tutor. Use ONLY the context to answer. "
+        "Cite with bracketed numbers like [1], [2] that correspond to the context items. "
+        "If unsure, say so briefly. For equations, use LaTeX math delimiters ($...$ or $$...$$) without backticks.\n\n"
+        f"QUESTION: {question}\n\nCONTEXT:\n{ctx}\n\nANSWER:"
     )
 
-    response = completion.choices[0].message.content.strip()
-    
-    answer_with_citations = append_citation_details(response, top_chunks)
-    return answer_with_citations, top_chunks
+def _append_citations(answer: str, chunks: List[Dict]) -> str:
+    # Extract used [n] citations and render a small reference list
+    used = sorted({m.group(0) for m in re.finditer(r"\[(\d+)\]", answer)})
+    if not used:
+        return answer
+    refs = ["\n\n**References**"]
+    for tag in used:
+        idx = int(tag.strip("[]")) - 1
+        if 0 <= idx < len(chunks):
+            c = chunks[idx]
+            label = c.get("doc") or c.get("title") or f"Unit {c.get('unit','?')}"
+            page  = c.get("page", "?")
+            refs.append(f"{tag} {label} • p.{page}")
+    return answer + "\n" + "\n".join(refs)
+
+# ---- Public API --------------------------------------------------------------
+
+def generate_rag_response(query: str, cfg: AppSettings, k: int = 5, temperature: float = 0.2) -> Tuple[str, List[Dict]]:
+    """
+    FAISS-first RAG (no external ES). If cfg.deploy_mode == 'elastic' and ES is available,
+    use ES instead.
+    Returns: (answer_markdown, source_chunks)
+    """
+    client = _get_openai(cfg.openai_api_key)
+    q_emb = _embed(client, query)
+
+    if cfg.deploy_mode.lower() == "elastic" and HAS_ES:
+        chunks = _es_search(q_emb, cfg, k=k)
+    else:
+        idx, meta = _load_faiss(cfg.faiss_index_path, cfg.faiss_meta_path)
+        chunks = _faiss_search(q_emb, idx, meta, k=k)
+
+    prompt = _assemble_prompt(chunks, query)
+    chat = client.chat.completions.create(
+        model=os.getenv("PHYSBOT_CHAT_MODEL", "gpt-4o-mini"),
+        messages=[{"role": "system", "content": "You are a helpful, citation-focused physics tutor."},
+                  {"role": "user", "content": prompt}],
+        temperature=temperature,
+        max_tokens=500,
+    )
+    answer = chat.choices[0].message.content.strip()
+    return _append_citations(answer, chunks), chunks
+
+# ---- Utilities ---------------------------------------------------------------
 
 def autoconvert_to_latex(text: str) -> str:
-    # Match basic equations not already in LaTeX or code
     pattern = r'(?<!\\)(?<!\$)(?<!`)(?<!\w)([A-Za-z][A-Za-z0-9\s^*/+\-=()]+=[^=][A-Za-z0-9\s^*/+\-()^]+)(?!\w)(?!\$)'
-    def repl(match):
-        expr = match.group(1).strip()
+    def repl(m):
+        expr = m.group(1).strip()
         return f"\\({expr}\\)"
     return re.sub(pattern, repl, text)
