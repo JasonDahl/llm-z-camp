@@ -1,4 +1,5 @@
-import os
+import osf
+import time
 import re
 import json
 import logging
@@ -10,7 +11,7 @@ import fitz  # PyMuPDF
 import nltk
 from nltk.tokenize import word_tokenize
 from services.ingest_phys.constants import CHAPTER_DIR, JSON_DIR, MARKDOWN_DIR, FIGURE_DIR, LOG_DIR
-from services.ingest_phys.utils import setup_logging
+from services.ingest_phys.utils import setup_logging, get_openai_client
 
 # Initialize unified logging (writes to datasets/physbot/metadata/logs)
 setup_logging(log_name_prefix="physbot_batch")
