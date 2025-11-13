@@ -1,3 +1,4 @@
+# apps/physbot_app/requirements.txt
 streamlit==1.39.0
 openai==1.52.2
 tiktoken==0.7.0
