@@ -1,21 +1,32 @@
 # apps/physbot_app/app.py
+import sys
 import os
-import re
-import random
 from pathlib import Path
 
+# Ensure project root (the folder that contains physbot_core/) is on sys.path
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 import streamlit as st
+import re
+import random
 from PIL import Image
 from dotenv import load_dotenv
 
+from physbot_core.path_utils import get_project_root
 from physbot_core.settings import AppSettings
-from physbot_core.rag_utils import generate_rag_response, autoconvert_to_latex  # noqa: F401
+from physbot_core.rag_utils import generate_rag_response, autoconvert_to_latex
 
 # ---------------------- Page & env ----------------------
 st.set_page_config(page_title="PhysBot – Ask a Physics Question", page_icon="⚛️", layout="wide")
 
 # Load local .env if present (Streamlit Cloud will use Secrets instead)
-load_dotenv(".env")
+env_path = PROJECT_ROOT.parent / ".env"
+print(env_path)
+load_dotenv(env_path)
+print("Key loaded?", bool(os.getenv("OPENAI_API_KEY")))
+print(os.getenv("OPENAI_API_KEY"))
 
 # App config (env-first, with FAISS defaults for demo)
 cfg = AppSettings(
