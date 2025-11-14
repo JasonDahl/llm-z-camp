@@ -23,10 +23,8 @@ st.set_page_config(page_title="PhysBot â€“ Ask a Physics Question", page_icon="â
 
 # Load local .env if present (Streamlit Cloud will use Secrets instead)
 env_path = PROJECT_ROOT.parent / ".env"
-print(env_path)
 load_dotenv(env_path , override=True)
-print("Key loaded?", bool(os.getenv("OPENAI_API_KEY")))
-print(os.getenv("OPENAI_API_KEY"))
+
 
 # App config (env-first, with FAISS defaults for demo)
 cfg = AppSettings(
