@@ -25,6 +25,16 @@ st.set_page_config(page_title="PhysBot – Ask a Physics Question", page_icon="�
 env_path = PROJECT_ROOT.parent / ".env"
 load_dotenv(env_path , override=True)
 
+st.markdown("""
+<script>
+MathJax = {
+  tex: { inlineMath: [['\\(','\\)']] }
+};
+</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+""", unsafe_allow_html=True)
+
+
 
 # App config (env-first, with FAISS defaults for demo)
 cfg = AppSettings(
@@ -58,16 +68,31 @@ st.sidebar.markdown("**Ask your physics question** and get an answer with bracke
 # ---------------------- Rendering helpers ----------------------
 def render_answer(answer: str):
     st.markdown("## 🤖 Answer")
-    # Split on $$...$$ (block math). Render inline \( ... \) via markdown.
+
+    # 1. Split on block LaTeX
     parts = re.split(r"(\$\$.*?\$\$)", answer, flags=re.DOTALL)
+
     for part in parts:
-        if part.startswith("$$") and part.endswith(("$$",)):
-            # strip the outer $$ and render as block LaTeX
-            st.latex(part[2:-2].strip())
-        else:
-            # Keep inline LaTeX: \( ... \)
-            html_with_inline = re.sub(r"\\\((.*?)\\\)", r"\\(\1\\)", part)
-            st.markdown(html_with_inline.strip(), unsafe_allow_html=True)
+        part = part.strip()
+        if not part:
+            continue
+
+        # BLOCK math: $$ ... $$
+        if part.startswith("$$") and part.endswith("$"):
+            expr = part.strip("$")
+            st.latex(expr)
+            continue
+        
+        # INLINE math: \( ... \)
+        # Convert to MathJax <span> blocks
+        inline = re.sub(
+            r"\\\((.*?)\\\)",
+            r"<span class='mathjax'>\\(\1\\)</span>",
+            part,
+            flags=re.DOTALL,
+        )
+
+        st.markdown(inline, unsafe_allow_html=True)
 
 # ---------------------- Main UI ----------------------
 st.title("Physics Question Answering with RAG")
