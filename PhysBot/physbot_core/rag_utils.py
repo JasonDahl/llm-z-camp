@@ -124,7 +124,7 @@ def generate_rag_response(query: str, cfg: AppSettings, k: int = 5, temperature:
         messages=[{"role": "system", "content": "You are a helpful, citation-focused physics tutor."},
                   {"role": "user", "content": prompt}],
         temperature=temperature,
-        max_tokens=500,
+        max_tokens=2048,
     )
     answer = chat.choices[0].message.content.strip()
     return _append_citations(answer, chunks), chunks
