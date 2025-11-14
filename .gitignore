@@ -166,6 +166,7 @@ figures/
 logs/
 es_backup/
 *.pyc
+*.zip
 
 # PhysBot data
 PhysBot/datasets/physbot/raw/
