@@ -1,7 +1,21 @@
-# apps/physbot_app/requirements.txt
-streamlit==1.39.0
-openai==1.52.2
-tiktoken==0.7.0
-faiss-cpu==1.7.4
-pydantic<2
+# --- Core dependencies ---
+openai>=1.0.0
+tqdm>=4.65.0
+
+# --- PDF + LLM parsing ---
+PyMuPDF>=1.21.1        # this includes 'fitz'
+pymupdf4llm>=0.1.2
+pdfplumber>=0.10.2
+PyPDF2>=3.0.0
+
+# --- NLP ---
+nltk>=3.8.0
+
+# --- Environment / config ---
 python-dotenv>=1.0.0
+
+# --- Vector search ---
+faiss-cpu>=1.9.0.post1
+
+# --- Compatibility fix ---
+numpy<2
