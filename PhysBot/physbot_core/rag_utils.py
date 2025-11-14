@@ -33,7 +33,7 @@ def _load_faiss(idx_path: str, meta_path: str) -> Tuple[faiss.Index, List[Dict]]
 
 # ---- Embedding & search ------------------------------------------------------
 
-EMBEDDING_MODEL = "text-embedding-3-small"  # 1536d
+EMBEDDING_MODEL = "text-embedding-ada-002"  # 1536d
 
 def _embed(client: OpenAI, text: str) -> List[float]:
     resp = client.embeddings.create(model=EMBEDDING_MODEL, input=text)

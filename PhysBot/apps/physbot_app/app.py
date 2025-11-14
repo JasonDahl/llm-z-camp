@@ -24,7 +24,7 @@ st.set_page_config(page_title="PhysBot – Ask a Physics Question", page_icon="�
 # Load local .env if present (Streamlit Cloud will use Secrets instead)
 env_path = PROJECT_ROOT.parent / ".env"
 print(env_path)
-load_dotenv(env_path)
+load_dotenv(env_path , override=True)
 print("Key loaded?", bool(os.getenv("OPENAI_API_KEY")))
 print(os.getenv("OPENAI_API_KEY"))
 
@@ -90,7 +90,7 @@ if query:
     render_answer(answer)
     st.markdown("---")
 
-    # Provenance (keep your sidebar expander pattern)
+    # Provenance (sidebar expander pattern)
     with st.sidebar:
         st.markdown("## 📚 Sources & Sections")
         for i, chunk in enumerate(top_chunks, 1):
