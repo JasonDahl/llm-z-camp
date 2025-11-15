@@ -26,7 +26,7 @@ https://physbot-demo.streamlit.app/
 ---
 
 ## 📁 Repository Layout (High-Level)
-
+```
 llm-z-camp/
 │
 ├── PhysBot/ # Production-ready physics RAG system
@@ -39,7 +39,7 @@ llm-z-camp/
 ├── intro01/ # Basic RAG code from LLM Zoomcamp by Data Talks Club
 ├── README.md # You are here
 └── requirements.txt  # Copy of Physbot requirements
-
+```
 
 ---
 
