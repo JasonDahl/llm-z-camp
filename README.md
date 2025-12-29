@@ -1,11 +1,3 @@
-# llm-z-camp  
-*A sandbox and development workspace for LLM and RAG projects.*
-
-This repo contains a variety of experimental and production-grade AI projects created during my long-term LLM/RAG learning journey.  
-The flagship project currently hosted here is **PhysBot** — a physics question-answering system built with a full ingestion pipeline and FAISS-based RAG architecture.
-
----
-
 ## 🔭 Featured Project: **PhysBot**
 
 **PhysBot** is a retrieval-augmented physics tutor trained on the USCGA Physics I curriculum.  
@@ -22,6 +14,14 @@ https://physbot-demo.streamlit.app/
 
 📂 **Project code:**  
 [`PhysBot/`](PhysBot/)
+
+---
+
+# llm-z-camp  
+*A sandbox and development workspace for LLM and RAG projects.*
+
+This repo contains a variety of experimental and production-grade AI projects created during my long-term LLM/RAG learning journey.  
+The flagship project currently hosted here is **PhysBot** — a physics question-answering system built with a full ingestion pipeline and FAISS-based RAG architecture.
 
 ---
 
