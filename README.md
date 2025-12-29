@@ -1,5 +1,7 @@
 ## 🔭 Featured Project: **PhysBot**
 
+🔗 **Live Demo:** https://physbot-demo.streamlit.app/
+
 **PhysBot** is a retrieval-augmented physics tutor trained on the USCGA Physics I curriculum.  
 It uses:
 
@@ -8,9 +10,6 @@ It uses:
 - FAISS for fast vector search  
 - Streamlit UI for interactive Q&A  
 - Full provenance and bracketed citations  
-
-🚀 **Try the live app:**  
-https://physbot-demo.streamlit.app/
 
 📂 **Project code:**  
 [`PhysBot/`](PhysBot/)
